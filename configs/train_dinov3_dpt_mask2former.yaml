@@ -1,0 +1,20 @@
+data_root: "data/ADE20K"
+output_dir: "outputs/dinov3_dpt_m2f_ade20k"
+img_size: 512
+batch_size: 2
+num_epochs: 50
+lr: 1.0e-4
+weight_decay: 1.0e-4
+grad_clip: 1.0
+num_classes: 150
+hidden_dim: 256
+seed: 42
+num_workers: 4
+eval_interval: 5
+save_interval: 10
+freeze_backbone: true
+use_amp: false
+# DINOv3 backbone 权重: 使用 SAT493M (dinov3-sat 模型)
+# backbone_pretrained 留空则自动从官方下载 SAT493M 权重
+backbone_pretrained: ""
+resume: ""

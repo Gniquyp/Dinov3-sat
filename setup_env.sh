@@ -101,8 +101,24 @@ import omegaconf;   print('[OK] omegaconf')
 import yaml;        print('[OK] PyYAML')
 import termcolor;   print('[OK] termcolor')
 
-from MultiScaleDeformableAttention import MultiScaleDeformableAttention
-print('[OK] MultiScaleDeformableAttention (CUDA扩展)')
+# CUDA 扩展: .so 导出的是 ms_deform_attn_forward/backward 函数(不是同名类),
+# 训练通过 MSDeformAttnFunction.apply() 调用, 下面做真内核前向+反向测试
+import MultiScaleDeformableAttention as MSDA
+assert hasattr(MSDA, 'ms_deform_attn_forward'), '扩展缺少 ms_deform_attn_forward'
+assert hasattr(MSDA, 'ms_deform_attn_backward'), '扩展缺少 ms_deform_attn_backward'
+from dinov3.eval.segmentation.models.utils.ops.functions.ms_deform_attn_func import MSDeformAttnFunction
+N, M, D = 1, 2, 2
+Lq, L, P = 2, 2, 2
+shapes = torch.as_tensor([(6, 4), (3, 2)], dtype=torch.long).cuda()
+level_start_index = torch.cat((shapes.new_zeros((1,)), shapes.prod(1).cumsum(0)[:-1]))
+S = int(shapes.prod(1).sum())
+value = (torch.rand(N, S, M, D).cuda() * 0.01).requires_grad_(True)
+sampling_locations = torch.rand(N, Lq, M, L, P, 2).cuda().requires_grad_(True)
+attention_weights = torch.rand(N, Lq, M, L, P).cuda() + 1e-5
+attention_weights = (attention_weights / attention_weights.sum(-1, keepdim=True).sum(-2, keepdim=True)).requires_grad_(True)
+out = MSDeformAttnFunction.apply(value, shapes, level_start_index, sampling_locations, attention_weights, 2)
+out.sum().backward()
+print('[OK] MultiScaleDeformableAttention (CUDA扩展, 前向+反向内核通过)')
 
 print('')
 print('============================================')

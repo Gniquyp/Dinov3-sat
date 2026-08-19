@@ -3,9 +3,11 @@
 # 安装顺序: pip install -r requirements.txt (CUDA扩展需手动编译)
 # ============================================================
 
-# --- 核心框架 (先装，根据CUDA版本选) ---
-torch>=2.1.0
-torchvision>=0.16.0
+# --- 核心框架 (先装, 根据 CUDA 版本选) ---
+# 推荐 (Driver 550.x / CUDA 12.4):
+#   pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
+torch>=2.3.0
+torchvision>=0.18.0
 
 # --- 数值计算 ---
 numpy

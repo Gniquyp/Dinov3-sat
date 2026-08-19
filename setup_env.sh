@@ -1,7 +1,8 @@
 #!/bin/bash
 # ============================================================
 # DINOv3-SAT + DPT + Mask2Former 一键环境部署脚本
-# 适配: RTX 3080 (20GB) × 3, Driver 535.288.01, CUDA 12.2
+# 适配: Driver 550.163.01 (最高 CUDA 12.4), Linux
+# 组合: Python 3.10 + PyTorch 2.5.1 (cu124) + CUDA Toolkit 12.4 (含 nvcc)
 # 用法: bash setup_env.sh
 # ============================================================
 set -e
@@ -17,16 +18,22 @@ conda activate dinov3-sat
 
 echo ""
 echo "============================================"
-echo " Step 2/6: 安装 CUDA Toolkit 12.1 (编译扩展用)"
+echo " Step 2/6: 安装 CUDA Toolkit 12.4 (含 nvcc, 编译扩展用)"
 echo "============================================"
-conda install -c conda-forge cudatoolkit=12.1 -y
-# 或者如果服务器已全局安装 CUDA 12.x，可跳过此步
+if command -v nvcc >/dev/null 2>&1; then
+    echo "检测到系统已有 nvcc: $(nvcc --version | grep release), 跳过安装"
+else
+    # 注意: conda-forge 的 cudatoolkit 包不含 nvcc! 必须用 nvidia 源的 cuda-toolkit
+    conda install -c nvidia cuda-toolkit=12.4 -y
+fi
+# 让 setup.py 找到编译器
+export CUDA_HOME=${CUDA_HOME:-$CONDA_PREFIX}
 
 echo ""
 echo "============================================"
-echo " Step 3/6: 安装 PyTorch (CUDA 12.1)"
+echo " Step 3/6: 安装 PyTorch 2.5.1 (CUDA 12.4)"
 echo "============================================"
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu124
 
 echo ""
 echo "============================================"
@@ -46,6 +53,11 @@ echo ""
 echo "============================================"
 echo " Step 6/6: 验证环境"
 echo "============================================"
+if command -v nvcc >/dev/null 2>&1; then
+    echo "[OK] nvcc: $(nvcc --version | grep release)"
+else
+    echo "[警告] 未找到 nvcc! 请执行: export CUDA_HOME=\$CONDA_PREFIX 并确认 cuda-toolkit 已安装"
+fi
 python -c "
 import torch
 print(f'[OK] PyTorch {torch.__version__}')

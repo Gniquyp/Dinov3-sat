@@ -76,7 +76,8 @@ class DPTMultiScaleFeatureExtractor(nn.Module):
         """
         # ReassembleBlocks 处理：将 ViT 特征转换为 4 个尺度
         # 输出尺度依次为: x4(上采样), x2(上采样), x1(不变), x0.5(下采样)
-        x = self.reassemble_blocks(inputs)
+        # 注意: encoder 返回的是 tuple, ReassembleBlocks 断言要求 list
+        x = self.reassemble_blocks(list(inputs))
 
         # 每个尺度通过卷积统一通道数
         multi_scale_features = []
@@ -114,6 +115,7 @@ class DINOv3DPTMask2Former(nn.Module):
         num_classes: int = 150,
         use_backbone_norm: bool = True,
         use_batchnorm: bool = False,
+        freeze_backbone: bool = True,
         autocast_dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
@@ -136,8 +138,8 @@ class DINOv3DPTMask2Former(nn.Module):
             adapt_to_patch_size=PatchSizeAdaptationStrategy.CENTER_PADDING,
         )
 
-        # 冻结 backbone
-        self.encoder.backbone.requires_grad_(False)
+        # 冻结/解冻 backbone (encoder wrapper 构造时默认冻结, 这里显式覆盖)
+        self.encoder.backbone.requires_grad_(not freeze_backbone)
 
         # 获取 backbone 的 embed_dim
         embed_dims = self.encoder.embed_dims
@@ -245,6 +247,7 @@ def build_dinov3_dpt_mask2former(
     num_classes: int = 150,
     use_backbone_norm: bool = True,
     use_batchnorm: bool = False,
+    freeze_backbone: bool = True,
     autocast_dtype: torch.dtype = torch.float32,
 ) -> DINOv3DPTMask2Former:
     """
@@ -269,6 +272,7 @@ def build_dinov3_dpt_mask2former(
         num_classes=num_classes,
         use_backbone_norm=use_backbone_norm,
         use_batchnorm=use_batchnorm,
+        freeze_backbone=freeze_backbone,
         autocast_dtype=autocast_dtype,
     )
     model.eval()

@@ -1,20 +1,33 @@
-data_root: "data/ADE20K"
-output_dir: "outputs/dinov3_dpt_m2f_ade20k"
-img_size: 512
+# ============================================================
+# DINOv3-SAT + DPT + Mask2Former
+# 2026 低空图像语义分割赛道 (无人机航拍, 8 类)
+# ============================================================
+
+# 数据集根目录: 包含 images/ (图像) 和 train/ (标注) 两个子目录
+# 例: /data/2026-低空图像语义分割赛道-训练集/train/train
+data_root: "/path/to/dataset/train/train"
+images_subdir: "images"
+masks_subdir: "train"
+val_ratio: 0.05          # 训练集中划 5% 做验证 (约 350 张)
+
+output_dir: "outputs/dinov3_dpt_m2f_drone"
+img_size: 512            # 训练随机裁剪 512x512 (原图 1024x1024)
 batch_size: 2
 num_epochs: 50
 lr: 1.0e-4
 weight_decay: 1.0e-4
 grad_clip: 1.0
-num_classes: 150
+num_classes: 8           # 8 类: Background/Building/Road/Water/Barren/Vegetation/Agricultural/Vehicle
 hidden_dim: 256
 seed: 42
 num_workers: 4
-eval_interval: 5
-save_interval: 10
-freeze_backbone: true
-use_amp: false
-# DINOv3 backbone 权重: 使用 SAT493M (dinov3-sat 模型)
-# backbone_pretrained 留空则自动从官方下载 SAT493M 权重
+eval_interval: 2
+save_interval: 5
+unfreeze_backbone: false # 第一轮先冻结主干只训练头; 冲分阶段改 true 放开微调
+backbone_lr_mult: 0.1    # 放开微调时 backbone 学习率 = lr x 0.1
+use_amp: true            # 混合精度, 20GB 显存建议开
+
+# DINOv3-SAT (SAT493M) 权重文件路径 (需自行从 HF 下载后上传, 见 README/说明)
+# 留空则尝试从 dl.fbaipublicfiles.com 下载 (目前已 403, 不可用)
 backbone_pretrained: ""
 resume: ""

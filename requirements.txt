@@ -1,0 +1,25 @@
+# ============================================================
+# DINOv3-SAT + DPT + Mask2Former 训练环境依赖
+# 安装顺序: pip install -r requirements.txt (CUDA扩展需手动编译)
+# ============================================================
+
+# --- 核心框架 (先装，根据CUDA版本选) ---
+torch>=2.1.0
+torchvision>=0.16.0
+
+# --- 数值计算 ---
+numpy
+scipy
+
+# --- 图像处理 ---
+Pillow
+
+# --- 配置管理 ---
+omegaconf
+PyYAML
+
+# --- 日志 ---
+termcolor
+
+# --- 评估指标 (dinov3.eval.utils 依赖) ---
+torchmetrics

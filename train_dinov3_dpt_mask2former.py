@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
-from PIL import Image
+from PIL import Image, ImageOps
 
 from dinov3.hub.backbones import dinov3_vitl16, Weights
 from dinov3.eval.segmentation.models.dinov3_dpt_mask2former import build_dinov3_dpt_mask2former
@@ -172,20 +172,23 @@ class SetCriterion(nn.Module):
         assert "pred_masks" in outputs
 
         src_idx = self._get_src_permutation_idx(indices)
-        tgt_idx = self._get_tgt_permutation_idx(indices)
+        tgt_idx = self._get_tgt_permutation_idx(indices)  # (batch_idx, tgt_within_image_idx)
         src_masks = outputs["pred_masks"]
         src_masks = src_masks[src_idx]
-        masks = [t["masks"] for t in targets]
 
-        max_h = max([m.shape[1] for m in masks])
-        max_w = max([m.shape[2] for m in masks])
-        padded_masks = []
-        for m in masks:
-            h, w = m.shape[1], m.shape[2]
-            padded = F.pad(m, (0, max_w - w, 0, max_h - h))
-            padded_masks.append(padded)
+        # 与 detectron2 nested_tensor 行为一致: 对每张图的 [N_b, H, W] 在
+        # 目标数/高/宽三个维度上 pad 后 stack 为 [B, N_max, H_max, W_max],
+        # 再用 (batch_idx, tgt_idx) 二元组索引取出匹配的目标
+        masks = [t["masks"] for t in targets]
+        max_n = max(m.shape[0] for m in masks)
+        max_h = max(m.shape[1] for m in masks)
+        max_w = max(m.shape[2] for m in masks)
+        padded_masks = [
+            F.pad(m, (0, max_w - m.shape[2], 0, max_h - m.shape[1], 0, max_n - m.shape[0]))
+            for m in masks
+        ]
         target_masks = torch.stack(padded_masks).to(src_masks.device)
-        target_masks = target_masks[tgt_idx]
+        target_masks = target_masks[tgt_idx]  # [num_matches, H_max, W_max]
 
         src_masks = src_masks[:, None]
         target_masks = target_masks[:, None]
@@ -288,24 +291,55 @@ def build_criterion(num_classes, mask_weight=20.0, dice_weight=1.0, cls_weight=2
     return criterion
 
 
-class ADE20KDataset(Dataset):
-    def __init__(self, root, split="training", img_size=512, transform=None, reduce_zero_label=True):
+class DroneSegDataset(Dataset):
+    """低空无人机航拍语义分割数据集 (2026 低空图像语义分割赛道)
+
+    目录结构:
+        root/
+          images/    *.png  RGB 图像
+          train/     *.png  灰度标注 (L 模式), 像素值 0..8
+    标签定义 (Label.txt):
+        0=Ignore, 1=Background, 2=Building, 3=Road, 4=Water,
+        5=Barren, 6=Vegetation, 7=Agricultural, 8=Vehicle
+    标签映射: 原始 1..8 -> 0..7 (共 8 类), 原始 0 -> 255 (ignore_index)
+
+    数据集不带验证集, 内部按固定种子做 train/val 划分, 不复制文件。
+    """
+
+    IMG_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tif", ".tiff")
+
+    def __init__(self, root, split="train", transform=None,
+                 images_subdir="images", masks_subdir="train",
+                 val_ratio=0.05, seed=42, reduce_zero_label=True):
         self.root = Path(root)
         self.split = split
-        self.img_size = img_size
         self.transform = transform
         self.reduce_zero_label = reduce_zero_label
 
-        if split == "training":
-            img_dir = self.root / "images" / "training"
-            ann_dir = self.root / "annotations" / "training"
-        else:
-            img_dir = self.root / "images" / "validation"
-            ann_dir = self.root / "annotations" / "validation"
+        img_dir = self.root / images_subdir
+        ann_dir = self.root / masks_subdir
+        img_files = sorted(f for f in img_dir.iterdir() if f.suffix.lower() in self.IMG_EXTENSIONS)
+        ann_files = sorted(f for f in ann_dir.iterdir() if f.suffix.lower() == ".png")
+        assert len(img_files) == len(ann_files), \
+            f"图像({len(img_files)})和标注({len(ann_files)})数量不匹配"
+        # 同名配对校验
+        for i, a in zip(img_files, ann_files):
+            assert i.stem == a.stem, f"图像与标注文件名不对应: {i.name} vs {a.name}"
 
-        self.img_files = sorted(list(img_dir.glob("*.jpg")))
-        self.ann_files = sorted(list(ann_dir.glob("*.png")))
-        assert len(self.img_files) == len(self.ann_files), "图像和标注数量不匹配"
+        # 固定种子的确定性 train/val 划分
+        n = len(img_files)
+        perm = np.random.RandomState(seed).permutation(n)
+        n_val = int(round(n * val_ratio))
+        if split == "train":
+            keep = perm[n_val:]
+        elif split == "val":
+            keep = perm[:n_val]
+        elif split == "all":
+            keep = perm
+        else:
+            raise ValueError(f"未知 split: {split}")
+        self.img_files = [img_files[i] for i in keep]
+        self.ann_files = [ann_files[i] for i in keep]
 
     def __len__(self):
         return len(self.img_files)
@@ -321,6 +355,7 @@ class ADE20KDataset(Dataset):
             ann = torch.from_numpy(np.array(ann)).long()
 
         if self.reduce_zero_label:
+            # 原始 1..8 -> 0..7, 原始 0 (Ignore) -> 255
             ann = ann - 1
             ann[ann < 0] = 255
 
@@ -328,20 +363,47 @@ class ADE20KDataset(Dataset):
 
 
 class TrainTransform:
-    def __init__(self, img_size=512, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225), flip_prob=0.5):
+    """训练增广: 随机缩放 + 随机裁剪 img_size + 水平翻转 + 颜色抖动(仅图像)"""
+
+    def __init__(self, img_size=512, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225),
+                 flip_prob=0.5, scale_range=(0.75, 1.5), color_jitter=0.3):
         self.img_size = img_size
         self.mean = mean
         self.std = std
         self.flip_prob = flip_prob
+        self.scale_range = scale_range
         self.normalize = transforms.Normalize(mean=mean, std=std)
+        self.jitter = (transforms.ColorJitter(color_jitter, color_jitter, color_jitter)
+                       if color_jitter > 0 else None)
 
     def __call__(self, img, ann):
-        img = img.resize((self.img_size, self.img_size), Image.BILINEAR)
-        ann = ann.resize((self.img_size, self.img_size), Image.NEAREST)
+        # 随机缩放
+        w, h = img.size
+        scale = random.uniform(*self.scale_range)
+        new_w, new_h = int(round(w * scale)), int(round(h * scale))
+        img = img.resize((new_w, new_h), Image.BILINEAR)
+        ann = ann.resize((new_w, new_h), Image.NEAREST)
+
+        # 不足 img_size 时右侧/下侧 padding (图像填0, 标注填255=ignore)
+        pad_w = max(0, self.img_size - new_w)
+        pad_h = max(0, self.img_size - new_h)
+        if pad_w > 0 or pad_h > 0:
+            img = ImageOps.expand(img, (0, 0, pad_w, pad_h), fill=0)
+            ann = ImageOps.expand(ann, (0, 0, pad_w, pad_h), fill=255)
+            new_w, new_h = img.size
+
+        # 随机裁剪
+        i = random.randint(0, new_h - self.img_size)
+        j = random.randint(0, new_w - self.img_size)
+        img = img.crop((j, i, j + self.img_size, i + self.img_size))
+        ann = ann.crop((j, i, j + self.img_size, i + self.img_size))
 
         if random.random() < self.flip_prob:
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
             ann = ann.transpose(Image.FLIP_LEFT_RIGHT)
+
+        if self.jitter is not None:
+            img = self.jitter(img)
 
         img = transforms.ToTensor()(img)
         img = self.normalize(img)
@@ -351,6 +413,8 @@ class TrainTransform:
 
 
 class ValTransform:
+    """验证: 直接整体缩放到 img_size"""
+
     def __init__(self, img_size=512, mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)):
         self.img_size = img_size
         self.mean = mean
@@ -515,7 +579,11 @@ def validate(model, criterion, dataloader, device, num_classes):
         weight_dict = criterion.weight_dict
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
-        miou = compute_miou(outputs["pred_masks"], outputs["pred_logits"], gt_masks, num_classes)
+        # pred_masks 分辨率为输入的 1/4, 需上采样到 gt 尺寸再算 mIoU
+        pred_masks = F.interpolate(
+            outputs["pred_masks"], size=gt_masks.shape[-2:], mode="bilinear", align_corners=False
+        )
+        miou = compute_miou(pred_masks, outputs["pred_logits"], gt_masks, num_classes)
 
         total_loss += losses.item()
         total_miou += miou
@@ -529,15 +597,19 @@ def validate(model, criterion, dataloader, device, num_classes):
 
 def main():
     parser = argparse.ArgumentParser(description="Train DINOv3 + DPT + Mask2Former")
-    parser.add_argument("--data_root", type=str, required=True, help="ADE20K 数据集根目录")
+    parser.add_argument("--data_root", type=str, required=True,
+                        help="数据集根目录 (包含 images/ 和标注子目录)")
+    parser.add_argument("--images_subdir", type=str, default="images", help="图像子目录名")
+    parser.add_argument("--masks_subdir", type=str, default="train", help="标注子目录名")
+    parser.add_argument("--val_ratio", type=float, default=0.05, help="验证集划分比例")
     parser.add_argument("--output_dir", type=str, default="./outputs/dinov3_dpt_m2f", help="输出目录")
-    parser.add_argument("--img_size", type=int, default=512, help="图像大小")
+    parser.add_argument("--img_size", type=int, default=512, help="训练裁剪大小")
     parser.add_argument("--batch_size", type=int, default=2, help="批大小")
     parser.add_argument("--num_epochs", type=int, default=50, help="训练轮数")
     parser.add_argument("--lr", type=float, default=1e-4, help="学习率")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="权重衰减")
     parser.add_argument("--grad_clip", type=float, default=1.0, help="梯度裁剪")
-    parser.add_argument("--num_classes", type=int, default=150, help="类别数")
+    parser.add_argument("--num_classes", type=int, default=8, help="类别数 (赛道为 8 类)")
     parser.add_argument("--hidden_dim", type=int, default=256, help="隐藏层维度")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument("--num_workers", type=int, default=4, help="数据加载线程数")
@@ -545,7 +617,10 @@ def main():
     parser.add_argument("--save_interval", type=int, default=10, help="保存间隔")
     parser.add_argument("--backbone_pretrained", type=str, default="", help="backbone 预训练权重路径")
     parser.add_argument("--resume", type=str, default="", help="恢复训练的 checkpoint 路径")
-    parser.add_argument("--freeze_backbone", action="store_true", default=True, help="冻结 backbone")
+    parser.add_argument("--unfreeze_backbone", action="store_true", default=False,
+                        help="放开主干微调 (默认冻结主干只训练头)")
+    parser.add_argument("--backbone_lr_mult", type=float, default=0.1,
+                        help="放开主干时 backbone 学习率 = lr x 该系数 (防止冲垮预训练特征)")
     parser.add_argument("--use_amp", action="store_true", default=False, help="使用混合精度训练")
 
     args = parser.parse_args()
@@ -571,12 +646,9 @@ def main():
         backbone=backbone,
         hidden_dim=args.hidden_dim,
         num_classes=args.num_classes,
+        freeze_backbone=not args.unfreeze_backbone,
     )
-
-    if args.freeze_backbone:
-        for param in model.encoder.backbone.parameters():
-            param.requires_grad = False
-        logger.info("Backbone 已冻结")
+    logger.info("Backbone 已放开微调" if args.unfreeze_backbone else "Backbone 已冻结")
 
     model = model.to(device)
 
@@ -593,21 +665,30 @@ def main():
     train_transform = TrainTransform(img_size=args.img_size)
     val_transform = ValTransform(img_size=args.img_size)
 
-    train_dataset = ADE20KDataset(
+    train_dataset = DroneSegDataset(
         root=args.data_root,
-        split="training",
-        img_size=args.img_size,
+        split="train",
         transform=train_transform,
+        images_subdir=args.images_subdir,
+        masks_subdir=args.masks_subdir,
+        val_ratio=args.val_ratio,
+        seed=args.seed,
     )
-    val_dataset = ADE20KDataset(
+    val_dataset = DroneSegDataset(
         root=args.data_root,
-        split="validation",
-        img_size=args.img_size,
+        split="val",
         transform=val_transform,
+        images_subdir=args.images_subdir,
+        masks_subdir=args.masks_subdir,
+        val_ratio=args.val_ratio,
+        seed=args.seed,
     )
 
     logger.info(f"训练集大小: {len(train_dataset)}")
     logger.info(f"验证集大小: {len(val_dataset)}")
+    do_eval = len(val_dataset) > 0
+    if not do_eval:
+        logger.warning("验证集为空, 将跳过验证 (val_ratio 过小?)")
 
     train_loader = DataLoader(
         train_dataset,
@@ -627,8 +708,24 @@ def main():
     )
 
     logger.info("构建优化器...")
-    params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
+    if args.unfreeze_backbone:
+        # 分层学习率: backbone 用小 lr, 头部用正常 lr
+        backbone_params = [p for n, p in model.named_parameters()
+                           if p.requires_grad and n.startswith("encoder.backbone")]
+        head_params = [p for n, p in model.named_parameters()
+                       if p.requires_grad and not n.startswith("encoder.backbone")]
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": backbone_params, "lr": args.lr * args.backbone_lr_mult},
+                {"params": head_params, "lr": args.lr},
+            ],
+            lr=args.lr, weight_decay=args.weight_decay,
+        )
+        logger.info(f"分层学习率: backbone {args.lr * args.backbone_lr_mult:.2e}, "
+                    f"head {args.lr:.2e}")
+    else:
+        params = [p for p in model.parameters() if p.requires_grad]
+        optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
@@ -666,7 +763,7 @@ def main():
 
         logger.info(f"Epoch {epoch + 1} 训练平均 Loss: {train_loss:.4f}")
 
-        if (epoch + 1) % args.eval_interval == 0 or epoch == args.num_epochs - 1:
+        if do_eval and ((epoch + 1) % args.eval_interval == 0 or epoch == args.num_epochs - 1):
             val_loss, val_miou = validate(model, criterion, val_loader, device, args.num_classes)
             logger.info(f"Epoch {epoch + 1} 验证 Loss: {val_loss:.4f}, mIoU: {val_miou:.4f}")
 

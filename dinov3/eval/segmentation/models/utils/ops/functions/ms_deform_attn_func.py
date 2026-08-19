@@ -41,6 +41,8 @@ class MSDeformAttnFunction(Function):
     @once_differentiable
     def backward(ctx, grad_output):
         value, value_spatial_shapes, value_level_start_index, sampling_locations, attention_weights = ctx.saved_tensors
+        # CUDA 反向内核要求 grad_output 连续, 此处兜底保证
+        grad_output = grad_output.contiguous()
         grad_value, grad_sampling_loc, grad_attn_weight = MSDA.ms_deform_attn_backward(
             value,
             value_spatial_shapes,

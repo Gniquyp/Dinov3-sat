@@ -117,7 +117,9 @@ sampling_locations = torch.rand(N, Lq, M, L, P, 2).cuda().requires_grad_(True)
 attention_weights = torch.rand(N, Lq, M, L, P).cuda() + 1e-5
 attention_weights = (attention_weights / attention_weights.sum(-1, keepdim=True).sum(-2, keepdim=True)).requires_grad_(True)
 out = MSDeformAttnFunction.apply(value, shapes, level_start_index, sampling_locations, attention_weights, 2)
-out.sum().backward()
+# 真实模型里 apply 的输出紧接着进 output_proj 的 Linear(产出连续张量、反向梯度也连续);
+# 这里裸测内核, 前向输出是非连续的, 需手动 contiguous 再求梯度
+out.contiguous().sum().backward()
 print('[OK] MultiScaleDeformableAttention (CUDA扩展, 前向+反向内核通过)')
 
 print('')

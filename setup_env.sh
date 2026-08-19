@@ -86,13 +86,13 @@ if command -v nvcc >/dev/null 2>&1; then
 else
     echo "[警告] 未找到 nvcc! 请执行: export CUDA_HOME=\$CONDA_PREFIX 并确认 cuda-toolkit 已安装"
 fi
-python -c "
+python << 'PYEOF'
 import torch
 print(f'[OK] PyTorch {torch.__version__}')
 print(f'[OK] CUDA {torch.version.cuda}')
 print(f'[OK] GPU count: {torch.cuda.device_count()}')
 for i in range(torch.cuda.device_count()):
-    print(f'[OK] GPU {i}: {torch.cuda.get_device_name(i)} ({torch.cuda.get_device_properties(i).total_mem / 1024**3:.1f} GB)')
+    print(f'[OK] GPU {i}: {torch.cuda.get_device_name(i)} ({torch.cuda.get_device_properties(i).total_memory / 1024**3:.1f} GB)')
 
 import numpy;       print('[OK] numpy')
 import scipy;       print('[OK] scipy')
@@ -112,14 +112,11 @@ print(' 数据集目录结构 (2026 低空语义分割赛道):')
 print('   <data_root>/images/*.png   (图像)')
 print('   <data_root>/train/*.png    (标注, 值 0..8, 0=Ignore)')
 print('')
-print(' 启动训练 (单卡):')
-print('   CUDA_VISIBLE_DEVICES=2 python train_dinov3_dpt_mask2former.py \\')
-print('       --data_root /path/to/train/train \\')
-print('       --backbone_pretrained /path/to/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth \\')
-print('       --use_amp --output_dir ./outputs/')
+print(' 启动训练 (单卡, 一条命令):')
+print('   python train_dinov3_dpt_mask2former.py --data_root /path/to/train/train --backbone_pretrained /path/to/dinov3_vitl16_pretrain_sat493m-eadcf0ff.pth --batch_size 4 --use_amp --output_dir ./outputs/')
 print(' 注意: 训练脚本当前仅支持单卡 (无 DDP 代码)')
 print('============================================')
-"
+PYEOF
 
 echo ""
 echo "Done!"

@@ -39,3 +39,9 @@ Thumbs.db
 # Temporary files
 26.1.2
 See
+
+# Nested stray clone (not part of this repo)
+Dinov3-sat1/
+
+# Prediction outputs (kept local only)
+predict/

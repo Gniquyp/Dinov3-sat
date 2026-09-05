@@ -6,9 +6,9 @@ import yaml
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train DINOv3 + DPT + Mask2Former")
-    parser.add_argument("--config", type=str, default="configs/train_dinov3_dpt_mask2former.yaml",
-                        help="配置文件路径")
+    parser = argparse.ArgumentParser(description="Train DINOv3 + ViT-CoMer/DPT + Mask2Former")
+    parser.add_argument("--config", type=str, default="configs/train_dinov3_comer_mask2former.yaml",
+                        help="配置文件路径 (文件名含 comer 时走 ViT-CoMer, 否则走 DPT)")
     parser.add_argument("--data_root", type=str, default=None, help="数据集根目录")
     parser.add_argument("--output_dir", type=str, default=None, help="输出目录")
     parser.add_argument("--batch_size", type=int, default=None, help="批大小")
@@ -34,7 +34,10 @@ def main():
         else:
             sys.argv.extend([f"--{key}", str(value)])
 
-    from train_dinov3_dpt_mask2former import main as train_main
+    if "comer" in os.path.basename(args.config).lower():
+        from train_dinov3_comer_mask2former import main as train_main
+    else:
+        from train_dinov3_dpt_mask2former import main as train_main
     train_main()
 
 
